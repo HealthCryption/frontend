@@ -30,9 +30,24 @@ export default function Register() {
       return;
     }
 
-    // Validate password strength
+    // Validate password strength - must match backend requirements
     if (formData.password.length < 8) {
       setError('Password must be at least 8 characters');
+      return;
+    }
+
+    if (!/[A-Z]/.test(formData.password)) {
+      setError('Password must contain at least one uppercase letter');
+      return;
+    }
+
+    if (!/[a-z]/.test(formData.password)) {
+      setError('Password must contain at least one lowercase letter');
+      return;
+    }
+
+    if (!/\d/.test(formData.password)) {
+      setError('Password must contain at least one digit');
       return;
     }
 
@@ -47,7 +62,13 @@ export default function Register() {
         state: { message: 'Registration successful! Please login.' }
       });
     } catch (err: any) {
-      setError(err.response?.data?.detail || 'Registration failed');
+      // Handle both string and array error formats from backend
+      const errorDetail = err.response?.data?.detail;
+      if (Array.isArray(errorDetail)) {
+        setError(errorDetail[0]?.msg || 'Registration failed');
+      } else {
+        setError(errorDetail || 'Registration failed');
+      }
     } finally {
       setLoading(false);
     }
@@ -146,6 +167,9 @@ export default function Register() {
               className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
               placeholder="Min. 8 characters"
             />
+            <p className="mt-1 text-xs text-gray-500">
+              Must contain: uppercase, lowercase, and number
+            </p>
           </div>
 
           <div>
