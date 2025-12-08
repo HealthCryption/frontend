@@ -21,7 +21,10 @@ export default function Login() {
       const response = await authAPI.login({ username, password });
       const { access_token } = response.data;
 
-      // Get user info
+      // Store token in localStorage FIRST (so the API interceptor can use it)
+      localStorage.setItem('access_token', access_token);
+
+      // Get user info (now the Authorization header will be included)
       const userResponse = await authAPI.getCurrentUser();
       const user = userResponse.data;
 
