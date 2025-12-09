@@ -53,11 +53,22 @@ export const patientAPI = {
 
 // Doctor API
 export const doctorAPI = {
+  // List all doctors in the system
+  listDoctors: () => api.get('/doctors/list'),
+
+  // Doctor accesses their patients
   getMyPatients: () => api.get('/doctors/my-patients'),
 
   getPatientData: (patientId: number, password: string) =>
     api.get(`/doctors/patient/${patientId}/data?password=${encodeURIComponent(password)}`),
 
+  getPatientImages: (patientId: number) =>
+    api.get(`/doctors/patient/${patientId}/images`),
+
+  downloadPatientImage: (patientId: number, imageId: number) =>
+    api.get(`/doctors/patient/${patientId}/images/${imageId}`, { responseType: 'arraybuffer' }),
+
+  // Patient manages doctor access
   grantAccess: (doctorId: number, password: string) =>
     api.post(`/doctors/grant-access/${doctorId}?password=${encodeURIComponent(password)}`),
 
@@ -71,6 +82,9 @@ export const imageAPI = {
     image_type: string;
     view?: string;
     laterality?: string;
+    text_data_encrypted?: string;
+    text_data_nonce?: string;
+    text_data_salt?: string;
   }) => {
     const formData = new FormData();
     formData.append('file', file);
@@ -82,10 +96,10 @@ export const imageAPI = {
     });
   },
 
-  list: () => api.get('/images/list'),
+  list: () => api.get('/patients/images'),
 
   download: (imageId: number) =>
-    api.get(`/images/${imageId}`, { responseType: 'blob' }),
+    api.get(`/images/${imageId}`, { responseType: 'arraybuffer' }),  // Returns binary encrypted image
 
   delete: (imageId: number) => api.delete(`/images/${imageId}`),
 };
