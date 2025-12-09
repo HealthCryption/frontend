@@ -1,0 +1,57 @@
+version: '3.8'
+
+services:
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile.dev
+    ports:
+      - "8001:8001"
+    volumes:
+      - ./backend:/app
+      - backend_pycache:/app/__pycache__
+      - backend_data:/app/data
+    environment:
+      - PYTHONUNBUFFERED=1
+      - DATABASE_URL=sqlite+aiosqlite:///./data/healthcryption.db
+      - SECRET_KEY=dev-secret-key-change-in-production-min-32-chars-long
+      - REDIS_URL=redis://localhost:6379/0
+      - MINIO_ENDPOINT=localhost:9001
+      - MINIO_ACCESS_KEY=minioadmin
+      - MINIO_SECRET_KEY=minioadmin
+      - USE_LOCAL_STORAGE=true
+      - DEBUG=true
+      - ENVIRONMENT=development
+      - CORS_ORIGINS=http://localhost:3001,http://localhost:3000,http://localhost:5173
+    networks:
+      - healthcryption-network
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile.dev
+    ports:
+      - "3001:3001"
+    volumes:
+      - ./frontend:/app
+      - frontend_node_modules:/app/node_modules
+    environment:
+      - NODE_ENV=development
+      - VITE_API_URL=http://localhost:8001/api/v1
+      - CHOKIDAR_USEPOLLING=true
+      - WATCHPACK_POLLING=true
+    stdin_open: true
+    tty: true
+    depends_on:
+      - backend
+    networks:
+      - healthcryption-network
+
+networks:
+  healthcryption-network:
+    driver: bridge
+
+volumes:
+  frontend_node_modules:
+  backend_pycache:
+  backend_data:
