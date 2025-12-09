@@ -1,27 +1,231 @@
 /**
- * Web Crypto API wrapper for client-side encryption
- * Implements AES-256-GCM encryption compatible with backend
+ * Client-side cryptography utilities for encrypting/decrypting medical data
+ * Uses Web Crypto API with AES-256-GCM and PBKDF2 key derivation
  */
 
-// Convert string to ArrayBuffer
-function str2ab(str: string): ArrayBuffer {
+const PBKDF2_ITERATIONS = 100000;
+const SALT_LENGTH = 16; // bytes
+const NONCE_LENGTH = 12; // bytes for GCM
+const KEY_LENGTH = 256; // bits
+
+/**
+ * Generate a random salt
+ */
+export function generateSalt(): Uint8Array {
+  return crypto.getRandomValues(new Uint8Array(SALT_LENGTH));
+}
+
+/**
+ * Generate a random nonce
+ */
+export function generateNonce(): Uint8Array {
+  return crypto.getRandomValues(new Uint8Array(NONCE_LENGTH));
+}
+
+/**
+ * Derive encryption key from password using PBKDF2
+ */
+export async function deriveKeyFromPassword(
+  password: string,
+  salt: Uint8Array
+): Promise<CryptoKey> {
   const encoder = new TextEncoder();
-  return encoder.encode(str);
+  const passwordBuffer = encoder.encode(password);
+
+  // Import password as key material
+  const keyMaterial = await crypto.subtle.importKey(
+    'raw',
+    passwordBuffer,
+    'PBKDF2',
+    false,
+    ['deriveBits', 'deriveKey']
+  );
+
+  // Derive AES-GCM key
+  return crypto.subtle.deriveKey(
+    {
+      name: 'PBKDF2',
+      salt: salt,
+      iterations: PBKDF2_ITERATIONS,
+      hash: 'SHA-256',
+    },
+    keyMaterial,
+    { name: 'AES-GCM', length: KEY_LENGTH },
+    false,
+    ['encrypt', 'decrypt']
+  );
 }
 
-// Convert ArrayBuffer to string
-function ab2str(buf: ArrayBuffer): string {
+/**
+ * Encrypt data using AES-256-GCM
+ */
+export async function encryptData(
+  data: ArrayBuffer,
+  key: CryptoKey,
+  nonce: Uint8Array
+): Promise<ArrayBuffer> {
+  return crypto.subtle.encrypt(
+    {
+      name: 'AES-GCM',
+      iv: nonce,
+    },
+    key,
+    data
+  );
+}
+
+/**
+ * Decrypt data using AES-256-GCM
+ */
+export async function decryptData(
+  encryptedData: ArrayBuffer,
+  key: CryptoKey,
+  nonce: Uint8Array
+): Promise<ArrayBuffer> {
+  return crypto.subtle.decrypt(
+    {
+      name: 'AES-GCM',
+      iv: nonce,
+    },
+    key,
+    encryptedData
+  );
+}
+
+/**
+ * Encrypt image file with password
+ * Returns: Blob containing [salt][nonce][encrypted_data]
+ */
+export async function encryptImage(
+  imageFile: File,
+  password: string
+): Promise<Blob> {
+  // Read image as ArrayBuffer
+  const imageData = await imageFile.arrayBuffer();
+
+  // Generate salt and nonce
+  const salt = generateSalt();
+  const nonce = generateNonce();
+
+  // Derive key from password
+  const key = await deriveKeyFromPassword(password, salt);
+
+  // Encrypt image data
+  const encryptedData = await encryptData(imageData, key, nonce);
+
+  // Combine: [salt][nonce][encrypted_data]
+  const combinedData = new Uint8Array(
+    salt.length + nonce.length + encryptedData.byteLength
+  );
+  combinedData.set(salt, 0);
+  combinedData.set(nonce, salt.length);
+  combinedData.set(new Uint8Array(encryptedData), salt.length + nonce.length);
+
+  return new Blob([combinedData]);
+}
+
+/**
+ * Decrypt image blob with password
+ * Input: Blob containing [salt][nonce][encrypted_data]
+ * Returns: Decrypted ArrayBuffer
+ */
+export async function decryptImage(
+  encryptedBlob: Blob,
+  password: string
+): Promise<ArrayBuffer> {
+  const data = await encryptedBlob.arrayBuffer();
+  const dataArray = new Uint8Array(data);
+
+  // Extract salt, nonce, and encrypted data
+  const salt = dataArray.slice(0, SALT_LENGTH);
+  const nonce = dataArray.slice(SALT_LENGTH, SALT_LENGTH + NONCE_LENGTH);
+  const encryptedData = dataArray.slice(SALT_LENGTH + NONCE_LENGTH);
+
+  // Derive key from password
+  const key = await deriveKeyFromPassword(password, salt);
+
+  // Decrypt data
+  return decryptData(encryptedData.buffer, key, nonce);
+}
+
+/**
+ * Encrypt text with password
+ * Returns: Base64 encoded string containing [salt][nonce][encrypted_text]
+ */
+export async function encryptText(
+  text: string,
+  password: string
+): Promise<string> {
+  const encoder = new TextEncoder();
+  const textData = encoder.encode(text);
+
+  // Generate salt and nonce
+  const salt = generateSalt();
+  const nonce = generateNonce();
+
+  // Derive key from password
+  const key = await deriveKeyFromPassword(password, salt);
+
+  // Encrypt text data
+  const encryptedData = await encryptData(textData, key, nonce);
+
+  // Combine: [salt][nonce][encrypted_data]
+  const combinedData = new Uint8Array(
+    salt.length + nonce.length + encryptedData.byteLength
+  );
+  combinedData.set(salt, 0);
+  combinedData.set(nonce, salt.length);
+  combinedData.set(new Uint8Array(encryptedData), salt.length + nonce.length);
+
+  // Convert to base64
+  return arrayBufferToBase64(combinedData.buffer);
+}
+
+/**
+ * Decrypt text with password
+ * Input: Base64 encoded string containing [salt][nonce][encrypted_text]
+ * Returns: Decrypted text string
+ */
+export async function decryptText(
+  encryptedBase64: string,
+  password: string
+): Promise<string> {
+  // Decode from base64
+  const combinedData = base64ToArrayBuffer(encryptedBase64);
+  const dataArray = new Uint8Array(combinedData);
+
+  // Extract salt, nonce, and encrypted data
+  const salt = dataArray.slice(0, SALT_LENGTH);
+  const nonce = dataArray.slice(SALT_LENGTH, SALT_LENGTH + NONCE_LENGTH);
+  const encryptedData = dataArray.slice(SALT_LENGTH + NONCE_LENGTH);
+
+  // Derive key from password
+  const key = await deriveKeyFromPassword(password, salt);
+
+  // Decrypt data
+  const decryptedData = await decryptData(encryptedData.buffer, key, nonce);
+
+  // Convert to string
   const decoder = new TextDecoder();
-  return decoder.decode(buf);
+  return decoder.decode(decryptedData);
 }
 
-// Convert ArrayBuffer to Base64
-function ab2base64(buf: ArrayBuffer): string {
-  return btoa(String.fromCharCode(...new Uint8Array(buf)));
+/**
+ * Convert ArrayBuffer to Base64 string
+ */
+export function arrayBufferToBase64(buffer: ArrayBuffer): string {
+  const bytes = new Uint8Array(buffer);
+  let binary = '';
+  for (let i = 0; i < bytes.byteLength; i++) {
+    binary += String.fromCharCode(bytes[i]);
+  }
+  return btoa(binary);
 }
 
-// Convert Base64 to ArrayBuffer
-function base642ab(base64: string): ArrayBuffer {
+/**
+ * Convert Base64 string to ArrayBuffer
+ */
+export function base64ToArrayBuffer(base64: string): ArrayBuffer {
   const binaryString = atob(base64);
   const bytes = new Uint8Array(binaryString.length);
   for (let i = 0; i < binaryString.length; i++) {
@@ -31,207 +235,12 @@ function base642ab(base64: string): ArrayBuffer {
 }
 
 /**
- * Generate a random AES-256 key
+ * Create a blob URL from decrypted image data
  */
-export async function generateKey(): Promise<CryptoKey> {
-  return await crypto.subtle.generateKey(
-    {
-      name: "AES-GCM",
-      length: 256,
-    },
-    true, // extractable
-    ["encrypt", "decrypt"]
-  );
-}
-
-/**
- * Generate a random 96-bit nonce for AES-GCM
- */
-export function generateNonce(): Uint8Array {
-  return crypto.getRandomValues(new Uint8Array(12)); // 96 bits
-}
-
-/**
- * Derive a key from password using PBKDF2 (Web Crypto API)
- * Note: Backend uses Scrypt, but Web Crypto doesn't support it
- * For production, consider using a library like scrypt-js
- */
-export async function deriveKeyFromPassword(
-  password: string,
-  salt: Uint8Array
-): Promise<CryptoKey> {
-  const passwordKey = await crypto.subtle.importKey(
-    "raw",
-    str2ab(password),
-    "PBKDF2",
-    false,
-    ["deriveKey"]
-  );
-
-  return await crypto.subtle.deriveKey(
-    {
-      name: "PBKDF2",
-      salt: salt,
-      iterations: 100000, // Adjust based on performance
-      hash: "SHA-256",
-    },
-    passwordKey,
-    { name: "AES-GCM", length: 256 },
-    true,
-    ["encrypt", "decrypt"]
-  );
-}
-
-/**
- * Encrypt data using AES-256-GCM
- * @param key - CryptoKey for AES-256-GCM
- * @param data - Data to encrypt (string or ArrayBuffer)
- * @param aad - Additional Authenticated Data (optional)
- * @returns Object with ciphertext and nonce (both base64 encoded)
- */
-export async function encryptData(
-  key: CryptoKey,
-  data: string | ArrayBuffer,
-  aad?: string
-): Promise<{ ciphertext: string; nonce: string }> {
-  const nonce = generateNonce();
-  const dataBuffer = typeof data === "string" ? str2ab(data) : data;
-
-  const algorithm: AesGcmParams = {
-    name: "AES-GCM",
-    iv: nonce,
-  };
-
-  if (aad) {
-    algorithm.additionalData = str2ab(aad);
-  }
-
-  const ciphertext = await crypto.subtle.encrypt(algorithm, key, dataBuffer);
-
-  return {
-    ciphertext: ab2base64(ciphertext),
-    nonce: ab2base64(nonce.buffer),
-  };
-}
-
-/**
- * Decrypt data using AES-256-GCM
- * @param key - CryptoKey for AES-256-GCM
- * @param ciphertext - Base64 encoded ciphertext
- * @param nonce - Base64 encoded nonce
- * @param aad - Additional Authenticated Data (must match encryption)
- * @returns Decrypted data as string
- */
-export async function decryptData(
-  key: CryptoKey,
-  ciphertext: string,
-  nonce: string,
-  aad?: string
-): Promise<string> {
-  const ciphertextBuffer = base642ab(ciphertext);
-  const nonceBuffer = base642ab(nonce);
-
-  const algorithm: AesGcmParams = {
-    name: "AES-GCM",
-    iv: nonceBuffer,
-  };
-
-  if (aad) {
-    algorithm.additionalData = str2ab(aad);
-  }
-
-  try {
-    const decrypted = await crypto.subtle.decrypt(
-      algorithm,
-      key,
-      ciphertextBuffer
-    );
-    return ab2str(decrypted);
-  } catch (error) {
-    throw new Error("Decryption failed. Data may be tampered or wrong key.");
-  }
-}
-
-/**
- * Export CryptoKey to raw bytes (for storage or transmission)
- */
-export async function exportKey(key: CryptoKey): Promise<string> {
-  const exported = await crypto.subtle.exportKey("raw", key);
-  return ab2base64(exported);
-}
-
-/**
- * Import raw key bytes to CryptoKey
- */
-export async function importKey(keyData: string): Promise<CryptoKey> {
-  const keyBuffer = base642ab(keyData);
-  return await crypto.subtle.importKey(
-    "raw",
-    keyBuffer,
-    { name: "AES-GCM", length: 256 },
-    true,
-    ["encrypt", "decrypt"]
-  );
-}
-
-/**
- * Encrypt a file (useful for medical images)
- * @param key - AES-256 key
- * @param file - File object
- * @returns Encrypted file as Blob with metadata
- */
-export async function encryptFile(
-  key: CryptoKey,
-  file: File
-): Promise<{ encryptedBlob: Blob; nonce: string; originalName: string }> {
-  const arrayBuffer = await file.arrayBuffer();
-  const { ciphertext, nonce } = await encryptData(key, arrayBuffer);
-
-  // Convert base64 ciphertext back to binary blob
-  const encryptedBuffer = base642ab(ciphertext);
-  const encryptedBlob = new Blob([encryptedBuffer], {
-    type: "application/octet-stream",
-  });
-
-  return {
-    encryptedBlob,
-    nonce,
-    originalName: file.name,
-  };
-}
-
-/**
- * Decrypt a file
- * @param key - AES-256 key
- * @param encryptedData - Encrypted file data
- * @param nonce - Nonce used for encryption
- * @param mimeType - Original MIME type
- * @returns Decrypted file as Blob
- */
-export async function decryptFile(
-  key: CryptoKey,
-  encryptedData: ArrayBuffer,
-  nonce: string,
-  mimeType: string = "application/octet-stream"
-): Promise<Blob> {
-  const ciphertext = ab2base64(encryptedData);
-  const decrypted = await decryptData(key, ciphertext, nonce);
-
-  // Convert decrypted string back to binary
-  const binaryString = atob(ab2base64(str2ab(decrypted)));
-  const bytes = new Uint8Array(binaryString.length);
-  for (let i = 0; i < binaryString.length; i++) {
-    bytes[i] = binaryString.charCodeAt(i);
-  }
-
-  return new Blob([bytes], { type: mimeType });
-}
-
-/**
- * Hash data using SHA-256
- */
-export async function sha256(data: string): Promise<string> {
-  const buffer = str2ab(data);
-  const hashBuffer = await crypto.subtle.digest("SHA-256", buffer);
-  return ab2base64(hashBuffer);
+export function createImageBlobUrl(
+  decryptedData: ArrayBuffer,
+  mimeType: string = 'image/jpeg'
+): string {
+  const blob = new Blob([decryptedData], { type: mimeType });
+  return URL.createObjectURL(blob);
 }
