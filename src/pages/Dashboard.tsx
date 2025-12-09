@@ -1,8 +1,9 @@
 import { useNavigate, Link } from 'react-router-dom';
 import { useEffect, useState } from 'react';
-import { LogOut, User, Shield, Users, UserPlus } from 'lucide-react';
+import { LogOut, User, Shield, Users, UserPlus, UserMinus } from 'lucide-react';
 import { authApi, api, medicalImagesApi, doctorsApi } from '../lib/api';
 import UploadModal from '../components/UploadModal';
+import RemoveDoctorAccessModal from '../components/RemoveDoctorAccessModal';
 
 interface UserInfo {
   id: number;
@@ -18,13 +19,17 @@ export default function Dashboard() {
   const [loading, setLoading] = useState(true);
   const [medicalRecordsCount, setMedicalRecordsCount] = useState(0);
   const [patientsCount, setPatientsCount] = useState(0);
+  const [authorizedDoctorsCount, setAuthorizedDoctorsCount] = useState(0);
   const [isUploadModalOpen, setIsUploadModalOpen] = useState(false);
   const [isGrantAccessModalOpen, setIsGrantAccessModalOpen] = useState(false);
+  const [isRemoveDoctorAccessModalOpen, setIsRemoveDoctorAccessModalOpen] = useState(false);
   const [doctorIdToGrant, setDoctorIdToGrant] = useState('');
   const [grantPassword, setGrantPassword] = useState('');
   const [grantingAccess, setGrantingAccess] = useState(false);
   const [grantError, setGrantError] = useState<string | null>(null);
   const [grantSuccess, setGrantSuccess] = useState<string | null>(null);
+  const [availableDoctors, setAvailableDoctors] = useState<any[]>([]);
+  const [loadingDoctors, setLoadingDoctors] = useState(false);
 
   useEffect(() => {
     const fetchDashboardData = async () => {
@@ -40,6 +45,14 @@ export default function Dashboard() {
           } catch (error) {
             console.error('Failed to fetch medical records:', error);
             // Don't fail the whole dashboard if images can't be fetched
+          }
+
+          // Fetch authorized doctors count
+          try {
+            const doctorsResponse = await medicalImagesApi.getAuthorizedDoctors();
+            setAuthorizedDoctorsCount(doctorsResponse.length);
+          } catch (error) {
+            console.error('Failed to fetch authorized doctors:', error);
           }
         }
         
@@ -64,6 +77,24 @@ export default function Dashboard() {
 
     fetchDashboardData();
   }, [navigate]);
+
+  useEffect(() => {
+    const fetchAvailableDoctors = async () => {
+      if (isGrantAccessModalOpen) {
+        setLoadingDoctors(true);
+        try {
+          const doctors = await medicalImagesApi.getAvailableDoctors();
+          setAvailableDoctors(doctors);
+        } catch (error) {
+          console.error('Failed to fetch available doctors:', error);
+        } finally {
+          setLoadingDoctors(false);
+        }
+      }
+    };
+
+    fetchAvailableDoctors();
+  }, [isGrantAccessModalOpen]);
 
   const handleLogout = async () => {
     await authApi.logout();
@@ -98,6 +129,18 @@ export default function Dashboard() {
       setGrantSuccess(`Successfully granted access to Doctor ID ${doctorId}`);
       setDoctorIdToGrant('');
       setGrantPassword('');
+      
+      // Refresh authorized doctors count and available doctors list
+      try {
+        const [doctorsResponse, availableResponse] = await Promise.all([
+          medicalImagesApi.getAuthorizedDoctors(),
+          medicalImagesApi.getAvailableDoctors()
+        ]);
+        setAuthorizedDoctorsCount(doctorsResponse.length);
+        setAvailableDoctors(availableResponse);
+      } catch (error) {
+        console.error('Failed to refresh doctors lists:', error);
+      }
       
       // Close modal after 2 seconds
       setTimeout(() => {
@@ -183,7 +226,7 @@ export default function Dashboard() {
                 <div className="bg-gradient-to-br from-green-50 to-green-100 p-6 rounded-lg border border-green-200">
                   <h3 className="text-lg font-semibold text-green-900 mb-2">Authorized Doctors</h3>
                   <p className="text-green-700 text-sm">Doctors with access to your records</p>
-                  <div className="mt-4 text-3xl font-bold text-green-600">0</div>
+                  <div className="mt-4 text-3xl font-bold text-green-600">{authorizedDoctorsCount}</div>
                 </div>
 
                 <div className="bg-gradient-to-br from-purple-50 to-purple-100 p-6 rounded-lg border border-purple-200">
@@ -212,8 +255,12 @@ export default function Dashboard() {
                     <UserPlus className="w-5 h-5" />
                     <span>Grant Doctor Access</span>
                   </button>
-                  <button className="px-4 py-3 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg transition-colors text-left">
-                    View Audit Log
+                  <button 
+                    onClick={() => setIsRemoveDoctorAccessModalOpen(true)}
+                    className="flex items-center space-x-2 px-4 py-3 bg-red-600 hover:bg-red-700 text-white rounded-lg transition-colors"
+                  >
+                    <UserMinus className="w-5 h-5" />
+                    <span>Remove Doctor Access</span>
                   </button>
                 </div>
               </div>
@@ -279,10 +326,10 @@ export default function Dashboard() {
       {/* Grant Access Modal */}
       {isGrantAccessModalOpen && (
         <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
-          <div className="bg-white rounded-xl shadow-2xl max-w-md w-full p-6">
+          <div className="bg-white rounded-xl shadow-2xl max-w-3xl w-full max-h-[90vh] overflow-y-auto p-6">
             <h3 className="text-2xl font-bold text-gray-900 mb-4">Grant Doctor Access</h3>
             <p className="text-gray-600 mb-6">
-              Enter the doctor's ID and your password to securely share your medical records.
+              Select a doctor from the list below or enter their ID manually, then provide your password to securely share your medical records.
             </p>
 
             {grantError && (
@@ -296,6 +343,95 @@ export default function Dashboard() {
                 {grantSuccess}
               </div>
             )}
+
+            {/* Available Doctors List */}
+            <div className="mb-6">
+              <h4 className="text-lg font-semibold text-gray-900 mb-3">Available Doctors</h4>
+              {loadingDoctors ? (
+                <div className="text-center py-8">
+                  <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-indigo-600 mx-auto mb-2"></div>
+                  <p className="text-gray-600 text-sm">Loading doctors...</p>
+                </div>
+              ) : availableDoctors.length === 0 ? (
+                <div className="text-center py-6 bg-gray-50 rounded-lg border border-gray-200">
+                  <p className="text-gray-600 text-sm">No doctors available. All doctors have already been granted access.</p>
+                </div>
+              ) : (
+                <div className="max-h-80 overflow-y-auto space-y-3">
+                  {availableDoctors.map((doctor) => (
+                    <div
+                      key={doctor.doctor_id}
+                      onClick={() => setDoctorIdToGrant(doctor.doctor_id.toString())}
+                      className={`relative p-5 rounded-xl cursor-pointer transition-all duration-200 border-2 ${
+                        doctorIdToGrant === doctor.doctor_id.toString()
+                          ? 'bg-gradient-to-br from-indigo-50 to-indigo-100 border-indigo-500 shadow-md scale-[1.02]'
+                          : 'bg-white border-gray-200 hover:border-indigo-300 hover:shadow-sm'
+                      }`}
+                    >
+                      <div className="flex items-start justify-between">
+                        <div className="flex items-start space-x-4 flex-1">
+                          {/* Doctor Avatar/Icon */}
+                          <div className={`w-12 h-12 rounded-full flex items-center justify-center flex-shrink-0 ${
+                            doctorIdToGrant === doctor.doctor_id.toString()
+                              ? 'bg-indigo-600'
+                              : 'bg-gradient-to-br from-blue-500 to-indigo-600'
+                          }`}>
+                            <svg className="w-6 h-6 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z" />
+                            </svg>
+                          </div>
+
+                          {/* Doctor Info */}
+                          <div className="flex-1 min-w-0">
+                            <div className="flex items-center space-x-2 mb-1">
+                              <h5 className="text-lg font-bold text-gray-900 truncate">
+                                Dr. {doctor.doctor_name}
+                              </h5>
+                              <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-semibold ${
+                                doctorIdToGrant === doctor.doctor_id.toString()
+                                  ? 'bg-indigo-600 text-white'
+                                  : 'bg-blue-100 text-blue-800'
+                              }`}>
+                                ID: {doctor.doctor_id}
+                              </span>
+                            </div>
+                            
+                            <div className="space-y-1">
+                              <div className="flex items-center space-x-2">
+                                <svg className="w-4 h-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 8l7.89 5.26a2 2 0 002.22 0L21 8M5 19h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" />
+                                </svg>
+                                <p className="text-sm text-gray-600 truncate">{doctor.doctor_email}</p>
+                              </div>
+                              
+                              {doctor.doctor_username && (
+                                <div className="flex items-center space-x-2">
+                                  <svg className="w-4 h-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z" />
+                                  </svg>
+                                  <p className="text-sm text-gray-500">@{doctor.doctor_username}</p>
+                                </div>
+                              )}
+                            </div>
+                          </div>
+                        </div>
+
+                        {/* Selection Indicator */}
+                        {doctorIdToGrant === doctor.doctor_id.toString() && (
+                          <div className="absolute top-4 right-4">
+                            <div className="w-8 h-8 bg-indigo-600 rounded-full flex items-center justify-center shadow-lg animate-pulse">
+                              <svg className="w-5 h-5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M5 13l4 4L19 7" />
+                              </svg>
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
 
             <div className="space-y-4">
               <div>
@@ -352,6 +488,21 @@ export default function Dashboard() {
           </div>
         </div>
       )}
+
+      {/* Remove Doctor Access Modal */}
+      <RemoveDoctorAccessModal
+        isOpen={isRemoveDoctorAccessModalOpen}
+        onClose={() => setIsRemoveDoctorAccessModalOpen(false)}
+        onSuccess={async () => {
+          // Refresh authorized doctors count
+          try {
+            const doctorsResponse = await medicalImagesApi.getAuthorizedDoctors();
+            setAuthorizedDoctorsCount(doctorsResponse.length);
+          } catch (error) {
+            console.error('Failed to refresh authorized doctors count:', error);
+          }
+        }}
+      />
     </div>
   );
 }

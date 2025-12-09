@@ -201,6 +201,16 @@ export const medicalImagesApi = {
     const response = await api.delete(`/images/${imageId}`);
     return response.data;
   },
+
+  getAuthorizedDoctors: async () => {
+    const response = await api.get('/patients/authorized-doctors');
+    return response.data;
+  },
+
+  getAvailableDoctors: async () => {
+    const response = await api.get('/patients/available-doctors');
+    return response.data;
+  },
 };
 
 // Doctors API
