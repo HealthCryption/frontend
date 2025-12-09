@@ -1,0 +1,182 @@
+MedVault Frontend - API Contract & Requirements
+
+PROJECT: React/TypeScript healthcare encryption platform. Backend: http://localhost:8001/api/v1, Frontend: port 3001
+STACK: React 18, TypeScript, Vite, TailwindCSS, Zustand
+
+CRITICAL: ALL encryption/decryption is CLIENT-SIDE. Backend never sees plaintext. Use Web Crypto API (AES-256-GCM).
+
+=== KEY MANAGEMENT ===
+- Patient: 32-byte master key derived from password, wrap with PBKDF2
+- Login: Unwrap master key, store in memory only (NEVER localStorage)
+- Encryption: AES-256-GCM with 12-byte nonce
+- Doctor Access: Patient encrypts master key with doctor's X25519 public key
+
+=== API ENDPOINTS ===
+
+AUTH (/auth):
+
+POST /auth/register
+Request: {"email":"user@example.com","username":"johndoe","password":"SecurePass123","full_name":"John Doe","role":"patient"}
+Password rules: 8+ chars, uppercase, lowercase, digit
+Response 201: {"id":1,"email":"user@example.com","username":"johndoe","full_name":"John Doe","role":"patient","is_active":true,"is_verified":false,"totp_enabled":false,"created_at":"2025-12-08T12:00:00","updated_at":"2025-12-08T12:00:00"}
+Errors: 400 (email/username exists), 422 (validation)
+
+POST /auth/login
+Request: {"username":"johndoe","password":"SecurePass123","totp_code":"123456"}
+Response 200: {"access_token":"eyJ0eXAi...","refresh_token":"eyJ0eXAi...","token_type":"bearer","expires_in":900}
+Use: Authorization: Bearer {access_token} in all requests
+Errors: 401 (invalid), 403 (2FA required)
+
+POST /auth/refresh
+Request: {"refresh_token":"eyJ0eXAi..."}
+Response 200: Same as login
+
+GET /auth/me
+Headers: Authorization: Bearer {token}
+Response 200: {"id":1,"email":"user@example.com","username":"johndoe","full_name":"John Doe","role":"patient","is_active":true,"is_verified":false,"totp_enabled":false,"created_at":"2025-12-08T12:00:00","updated_at":"2025-12-08T12:00:00"}
+
+PATIENTS (/patients):
+
+GET /patients/data?password={password}
+Headers: Authorization: Bearer {token}
+Response 200: {"id":1,"user_id":1,"age":45,"birads":"BI-RADS 2","breast_density":"Scattered fibroglandular","findings":"No suspicious findings","medical_history":"Family history","created_at":"2025-12-08T12:00:00","updated_at":"2025-12-08T12:00:00"}
+
+PUT /patients/data
+Request: {"password":"SecurePass123","data":{"age":45,"birads":"BI-RADS 2","breast_density":"Scattered","findings":"None","medical_history":"Family history"}}
+Response 200: Same as GET
+
+GET /patients/images
+Response 200: [{"id":1,"patient_data_id":1,"image_type":"mammogram","view":"L-CC","laterality":"left","mime_type":"image/jpeg","storage_object_id":"patient_1/image_abc","storage_bucket":"medvault-images","encryption_algorithm":"AES256-GCM","file_size_bytes":1265650,"encrypted_size_bytes":1265650,"encrypted_file_hash":"e6a71289...","description_encrypted":"YWJjZGVm...","created_at":"2025-12-08T12:00:00","updated_at":"2025-12-08T12:00:00"}]
+
+IMAGES (/images):
+
+POST /images/upload
+Headers: Authorization: Bearer {token}, Content-Type: multipart/form-data
+FormData: file (encrypted binary), image_type ("mammogram"), view ("L-CC"), laterality ("left"), description_encrypted (base64(12-byte-nonce+ciphertext), min 13 bytes)
+Response 201: Same as image list item
+Errors: 400 (empty/invalid), 413 (>50MB), 500 (storage fail)
+
+GET /images/{image_id}
+Response 200: Binary encrypted image, Headers: X-Encryption-Algorithm: AES256-GCM, X-File-Hash, Content-Disposition
+
+GET /images/{image_id}/metadata
+Response 200: Same as image list item
+
+DELETE /images/{image_id}
+Response 200: {"message":"Image deleted successfully","image_id":1}
+
+DOCTORS (/doctors):
+
+POST /doctors/grant-access
+Request: {"doctor_email":"doctor@example.com","patient_master_key_encrypted":"base64_sealed_box"}
+Response 201: {"id":1,"patient_data_id":1,"doctor_id":2,"doctor_email":"doctor@example.com","doctor_name":"Dr. Jane","granted_by_patient":1,"is_active":true,"created_at":"2025-12-08T12:00:00","revoked_at":null}
+
+GET /doctors/my-patients
+Response 200: [{"patient_id":1,"patient_email":"patient@example.com","patient_name":"John Doe","access_granted_at":"2025-12-08T12:00:00","is_active":true}]
+
+GET /doctors/patient/{patient_id}/data?password={password}
+Response 200: Same as patient data
+
+AUDIT (/audit):
+
+GET /audit/my-logs
+Response 200: [{"id":1,"timestamp":"2025-12-08T12:00:00","action_type":"UPLOAD_IMAGE","resource_type":"medical_image","resource_id":1,"ip_address":"192.168.1.1","user_agent":"Mozilla...","success":true,"details":{"image_type":"mammogram"}}]
+
+=== PAGES ===
+1. /login - Email/username, password, optional 2FA, remember me
+2. /register - Email, username, password (strength indicator), full name, role selector
+3. /dashboard - Patient data display/edit, image list/upload, grant doctor access, audit log
+4. /doctor/dashboard - Patient list with access, view patient data/images
+5. Image Upload Modal - File picker, type/view/laterality, description input, preview
+6. Image Viewer Modal - Decrypt and display, show metadata, delete button
+
+=== CRYPTO (TypeScript) ===
+
+export class CryptoService {
+  static generateRandomBytes(length: number): Uint8Array {
+    return crypto.getRandomValues(new Uint8Array(length));
+  }
+
+  static async deriveKeyFromPassword(password: string, salt: Uint8Array, iterations = 100000): Promise<CryptoKey> {
+    const keyMaterial = await crypto.subtle.importKey('raw', new TextEncoder().encode(password), 'PBKDF2', false, ['deriveKey']);
+    return crypto.subtle.deriveKey({name:'PBKDF2',salt,iterations,hash:'SHA-256'}, keyMaterial, {name:'AES-GCM',length:256}, true, ['encrypt','decrypt']);
+  }
+
+  static async encryptAESGCM(data: Uint8Array, key: CryptoKey): Promise<{nonce: Uint8Array, ciphertext: Uint8Array}> {
+    const nonce = this.generateRandomBytes(12);
+    const ciphertext = await crypto.subtle.encrypt({name:'AES-GCM',iv:nonce}, key, data);
+    return {nonce, ciphertext: new Uint8Array(ciphertext)};
+  }
+
+  static async decryptAESGCM(ciphertext: Uint8Array, nonce: Uint8Array, key: CryptoKey): Promise<Uint8Array> {
+    const plaintext = await crypto.subtle.decrypt({name:'AES-GCM',iv:nonce}, key, ciphertext);
+    return new Uint8Array(plaintext);
+  }
+}
+
+// Encrypt image
+const encryptImage = async (file: File, masterKey: CryptoKey) => {
+  const data = new Uint8Array(await file.arrayBuffer());
+  const {nonce, ciphertext} = await CryptoService.encryptAESGCM(data, masterKey);
+  const combined = new Uint8Array(nonce.length + ciphertext.length);
+  combined.set(nonce, 0);
+  combined.set(ciphertext, nonce.length);
+  return new Blob([combined], {type:'application/octet-stream'});
+};
+
+// Decrypt image
+const decryptImage = async (encryptedBlob: Blob, masterKey: CryptoKey) => {
+  const data = new Uint8Array(await encryptedBlob.arrayBuffer());
+  const nonce = data.slice(0, 12);
+  const ciphertext = data.slice(12);
+  const plaintext = await CryptoService.decryptAESGCM(ciphertext, nonce, masterKey);
+  return new Blob([plaintext], {type:'image/jpeg'});
+};
+
+=== STATE (Zustand) ===
+
+interface AuthState {
+  user: UserResponse | null;
+  accessToken: string | null;
+  masterKey: CryptoKey | null; // Memory only, NEVER persist
+  login: (username: string, password: string) => Promise<void>;
+  logout: () => void;
+}
+
+export const useAuthStore = create<AuthState>((set) => ({
+  user: null,
+  accessToken: sessionStorage.getItem('access_token'),
+  masterKey: null,
+  login: async (username, password) => {
+    // Call API, store tokens, fetch user, derive master key, store in memory
+  },
+  logout: () => {
+    sessionStorage.clear();
+    set({user:null, accessToken:null, masterKey:null});
+  }
+}));
+
+=== NOTES ===
+- CORS: Backend allows localhost:3001, 3000, 5173
+- Errors: {"detail":"Error message"}
+- Master Key: Memory only, never persist
+- Token Refresh: Auto-refresh before 15min expiry
+- Image Display: URL.createObjectURL(), remember revoke
+- Description Format: base64(12-byte-nonce + encrypted-text), min 13 bytes before encoding
+- File Uploads: Use FormData with multipart/form-data
+
+=== CHECKLIST ===
+□ Registration (patient/doctor)
+□ Login with JWT
+□ Patient data CRUD
+□ Image upload with encryption
+□ Image download with decryption
+□ Description encryption/display
+□ Doctor access grant
+□ Doctor view patient data
+□ Audit logs
+□ Token refresh
+□ Logout cleanup
+□ Error handling
+
+Build clean UI with TailwindCSS. Focus on security and proper crypto flows.
