@@ -1,7 +1,7 @@
 import { useState, useRef, FormEvent } from 'react';
 import { X, Upload, FileImage, AlertCircle } from 'lucide-react';
 import PasswordPrompt from './PasswordPrompt';
-import { encryptImage, encryptText } from '../lib/crypto';
+import { encryptImageWithMasterKey, encryptTextWithMasterKey, getMasterKey } from '../lib/crypto';
 
 interface UploadModalProps {
   isOpen: boolean;
@@ -16,8 +16,6 @@ export default function UploadModal({ isOpen, onClose, onUpload }: UploadModalPr
   const [uploading, setUploading] = useState(false);
   const [error, setError] = useState('');
   const [previewUrl, setPreviewUrl] = useState<string>('');
-  const [showPasswordPrompt, setShowPasswordPrompt] = useState(false);
-  const [password, setPassword] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -48,11 +46,16 @@ export default function UploadModal({ isOpen, onClose, onUpload }: UploadModalPr
     }
   };
 
-  const performEncryptionAndUpload = async (pwd?: string) => {
-    const encryptionPassword = pwd || password;
-    
-    if (!encryptionPassword || !selectedFile) {
-      setError('Password and file are required');
+  const performEncryptionAndUpload = async () => {
+    if (!selectedFile) {
+      setError('File is required');
+      return;
+    }
+
+    // Get master key from memory
+    const masterKey = getMasterKey();
+    if (!masterKey) {
+      setError('Encryption key not available. Please log in again.');
       return;
     }
 
@@ -60,13 +63,13 @@ export default function UploadModal({ isOpen, onClose, onUpload }: UploadModalPr
     setError('');
 
     try {
-      // Encrypt the image
-      const encryptedImageBlob = await encryptImage(selectedFile, encryptionPassword);
+      // Encrypt the image with master key
+      const encryptedImageBlob = await encryptImageWithMasterKey(selectedFile, masterKey);
 
       // Encrypt the description if provided
       let encryptedDescription: string | null = null;
       if (description.trim()) {
-        encryptedDescription = await encryptText(description, encryptionPassword);
+        encryptedDescription = await encryptTextWithMasterKey(description, masterKey);
       }
 
       // Upload encrypted data
@@ -94,24 +97,7 @@ export default function UploadModal({ isOpen, onClose, onUpload }: UploadModalPr
       return;
     }
 
-    // Check if password is available, if not prompt for it
-    if (!password) {
-      setShowPasswordPrompt(true);
-      return;
-    }
-
     await performEncryptionAndUpload();
-  };
-
-  const handlePasswordSubmit = async (submittedPassword: string) => {
-    setPassword(submittedPassword);
-    setShowPasswordPrompt(false);
-    
-    // Store password in sessionStorage for this session
-    sessionStorage.setItem('encryption_password', submittedPassword);
-    
-    // Perform the upload with the password
-    await performEncryptionAndUpload(submittedPassword);
   };
 
   const handleClose = () => {
@@ -121,18 +107,9 @@ export default function UploadModal({ isOpen, onClose, onUpload }: UploadModalPr
       setDescription('');
       setPreviewUrl('');
       setError('');
-      setShowPasswordPrompt(false);
       onClose();
     }
   };
-
-  // Check if password is already in session storage when modal opens
-  useState(() => {
-    const storedPassword = sessionStorage.getItem('encryption_password');
-    if (storedPassword) {
-      setPassword(storedPassword);
-    }
-  });
 
   if (!isOpen) return null;
 
@@ -261,15 +238,6 @@ export default function UploadModal({ isOpen, onClose, onUpload }: UploadModalPr
             </button>
           </div>
         </form>
-
-        {/* Password Prompt */}
-        <PasswordPrompt
-          isOpen={showPasswordPrompt}
-          onSubmit={handlePasswordSubmit}
-          onCancel={() => setShowPasswordPrompt(false)}
-          title="Enter Password for Encryption"
-          message="Your password is required to encrypt the medical record before upload"
-        />
       </div>
     </div>
   );

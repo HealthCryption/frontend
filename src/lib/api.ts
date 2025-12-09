@@ -71,6 +71,25 @@ export interface LoginResponse {
   refresh_token: string;
   token_type: string;
   expires_in: number;
+  master_key?: string; // Base64 encoded master key (patients)
+  doctor_private_key?: string; // Base64 encoded private key (doctors)
+}
+
+export interface UserProfile {
+  id: number;
+  email: string;
+  username: string;
+  full_name: string;
+  role: 'patient' | 'doctor';
+  is_active: boolean;
+  is_verified: boolean;
+  totp_enabled: boolean;
+  created_at: string;
+  updated_at: string;
+  encrypted_master_key?: string; // Base64 encoded
+  key_salt?: string; // Base64 encoded
+  key_nonce?: string; // Base64 encoded
+  public_key_x25519?: string; // Base64 encoded (for doctors)
 }
 
 export interface RegisterRequest {
@@ -116,6 +135,12 @@ export const authApi = {
   },
 
   logout: async () => {
+    // Clear master key from memory
+    const { clearMasterKey, clearDoctorPassword } = await import('./crypto');
+    clearMasterKey();
+    clearDoctorPassword();
+    
+    // Clear tokens
     localStorage.removeItem('access_token');
     localStorage.removeItem('refresh_token');
   },
@@ -174,6 +199,50 @@ export const medicalImagesApi = {
 
   deleteImage: async (imageId: number) => {
     const response = await api.delete(`/images/${imageId}`);
+    return response.data;
+  },
+};
+
+// Doctors API
+export const doctorsApi = {
+  getPatients: async () => {
+    const response = await api.get('/doctors/my-patients');
+    return response;
+  },
+
+  getPatientImages: async (patientId: number) => {
+    const response = await api.get(`/doctors/patient/${patientId}/images`);
+    return response;
+  },
+
+  getMyPatients: async () => {
+    const response = await api.get('/doctors/my-patients');
+    return response.data;
+  },
+
+  getPatientData: async (patientId: number, password: string) => {
+    const response = await api.get(`/doctors/patient/${patientId}/data`, {
+      params: { password }
+    });
+    return response.data;
+  },
+
+  getPatientMasterKey: async (patientId: number, password: string): Promise<{ master_key: string; patient_id: number }> => {
+    const response = await api.get(`/doctors/patient/${patientId}/master-key`, {
+      params: { password }
+    });
+    return response.data;
+  },
+
+  grantAccess: async (doctorId: number, password: string) => {
+    const response = await api.post(`/doctors/grant-access/${doctorId}`, null, {
+      params: { password }
+    });
+    return response.data;
+  },
+
+  revokeAccess: async (doctorId: number) => {
+    const response = await api.delete(`/doctors/revoke-access/${doctorId}`);
     return response.data;
   },
 };

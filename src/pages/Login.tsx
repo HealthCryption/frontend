@@ -2,6 +2,7 @@ import { useState, FormEvent, useEffect } from 'react';
 import { useNavigate, Link, useLocation } from 'react-router-dom';
 import { Lock, Mail } from 'lucide-react';
 import { authApi } from '../lib/api';
+import { storeMasterKey, storeDoctorPassword, base64ToArrayBuffer } from '../lib/crypto';
 
 export default function Login() {
   const [username, setUsername] = useState('');
@@ -36,6 +37,26 @@ export default function Login() {
       // Store tokens
       localStorage.setItem('access_token', response.access_token);
       localStorage.setItem('refresh_token', response.refresh_token);
+
+      // If patient, store the unwrapped master key from backend
+      if (response.master_key) {
+        try {
+          const masterKeyBytes = new Uint8Array(base64ToArrayBuffer(response.master_key));
+          storeMasterKey(masterKeyBytes);
+          console.log('Patient master key received and stored successfully');
+        } catch (keyError) {
+          console.error('Failed to store master key:', keyError);
+          setError('Failed to process encryption key. Please contact support.');
+          setLoading(false);
+          return;
+        }
+      }
+
+      // If doctor, store password for later use (to fetch patient keys)
+      if (response.doctor_private_key) {
+        storeDoctorPassword(password);
+        console.log('Doctor password stored for accessing patient keys');
+      }
 
       // Redirect to dashboard
       navigate('/dashboard');

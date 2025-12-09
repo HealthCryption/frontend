@@ -1,49 +1,122 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { X, Download, FileText, Image as ImageIcon, AlertCircle } from 'lucide-react';
-import { medicalImagesApi } from '../lib/api';
-import { decryptImage, decryptText, createImageBlobUrl } from '../lib/crypto';
-import PasswordPrompt from './PasswordPrompt';
+import { medicalImagesApi, doctorsApi, authApi } from '../lib/api';
+import { decryptImageWithMasterKey, decryptTextWithMasterKey, createImageBlobUrl, getMasterKey, getDoctorPassword, base64ToArrayBuffer } from '../lib/crypto';
 
 interface ViewDecryptModalProps {
   isOpen: boolean;
   onClose: () => void;
   imageId: number;
-  imageType: string;
-  encryptedDescription: string | null;
+  imageType?: string;
+  encryptedDescription?: string | null;
+  patientId?: number; // Optional: for doctors viewing patient images
 }
 
 export default function ViewDecryptModal({
   isOpen,
   onClose,
   imageId,
-  imageType,
-  encryptedDescription,
+  imageType: propImageType,
+  encryptedDescription: propEncryptedDescription,
+  patientId,
 }: ViewDecryptModalProps) {
-  const [isPasswordPromptOpen, setIsPasswordPromptOpen] = useState(false);
   const [isDecrypting, setIsDecrypting] = useState(false);
   const [decryptedImageUrl, setDecryptedImageUrl] = useState<string | null>(null);
   const [decryptedDescription, setDecryptedDescription] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [showDescriptionFirst, setShowDescriptionFirst] = useState(true);
+  const [imageType, setImageType] = useState<string>(propImageType || 'medical_image');
+  const [encryptedDescription, setEncryptedDescription] = useState<string | null>(propEncryptedDescription || null);
+  const [fetchingMetadata, setFetchingMetadata] = useState(false);
+  const [doctorPassword, setDoctorPassword] = useState<string>('');
+  const [showPasswordPrompt, setShowPasswordPrompt] = useState(false);
 
-  const handlePasswordSubmit = async (password: string) => {
-    setIsPasswordPromptOpen(false);
+  // Fetch metadata if not provided (for doctors)
+  useEffect(() => {
+    const fetchMetadata = async () => {
+      if (!isOpen || propImageType !== undefined) return;
+      
+      setFetchingMetadata(true);
+      try {
+        let response;
+        if (patientId) {
+          // Doctor viewing patient image - fetch from doctor endpoint
+          response = await doctorsApi.getPatientImages(patientId);
+          const image = response.data.find((img: any) => img.id === imageId);
+          if (image) {
+            setImageType(image.image_type);
+            // Backend returns description_encrypted for doctors
+            setEncryptedDescription(image.description_encrypted || image.encrypted_description || null);
+          }
+        } else {
+          // Patient viewing own image
+          response = await medicalImagesApi.getImages();
+          const image = response.data.find((img: any) => img.id === imageId);
+          if (image) {
+            setImageType(image.image_type);
+            setEncryptedDescription(image.encrypted_description || null);
+          }
+        }
+      } catch (err) {
+        console.error('Failed to fetch image metadata:', err);
+        setError('Failed to load image information');
+      } finally {
+        setFetchingMetadata(false);
+      }
+    };
+
+    fetchMetadata();
+  }, [isOpen, imageId, patientId, propImageType]);
+
+  const handleDecrypt = async (password?: string) => {
     setIsDecrypting(true);
     setError(null);
 
     try {
+      let masterKey = getMasterKey();
+
+      // If patientId is provided, this is a doctor viewing a patient's image
+      if (patientId && !masterKey) {
+        const passwordToUse = password || doctorPassword || getDoctorPassword();
+        if (!passwordToUse) {
+          setShowPasswordPrompt(true);
+          setIsDecrypting(false);
+          return;
+        }
+
+        try {
+          // Fetch patient's master key
+          const keyResponse = await doctorsApi.getPatientMasterKey(patientId, passwordToUse);
+          const masterKeyBytes = new Uint8Array(base64ToArrayBuffer(keyResponse.master_key));
+          masterKey = masterKeyBytes;
+          setShowPasswordPrompt(false);
+        } catch (err: any) {
+          console.error('Failed to fetch patient master key:', err);
+          setError('Failed to access patient encryption key. Please verify your password.');
+          setShowPasswordPrompt(true);
+          setIsDecrypting(false);
+          return;
+        }
+      }
+
+      if (!masterKey) {
+        setError('Encryption key not available. Please log in again.');
+        setIsDecrypting(false);
+        return;
+      }
+
       // Fetch encrypted image from backend
       const encryptedBlob = await medicalImagesApi.getImage(imageId);
       
-      // Decrypt image
-      const decryptedImageData = await decryptImage(encryptedBlob, password);
+      // Decrypt image with master key
+      const decryptedImageData = await decryptImageWithMasterKey(encryptedBlob, masterKey);
       const imageUrl = createImageBlobUrl(decryptedImageData);
       setDecryptedImageUrl(imageUrl);
 
       // Decrypt description if available
       if (encryptedDescription) {
         try {
-          const decryptedDesc = await decryptText(encryptedDescription, password);
+          const decryptedDesc = await decryptTextWithMasterKey(encryptedDescription, masterKey);
           setDecryptedDescription(decryptedDesc);
         } catch (err) {
           console.error('Failed to decrypt description:', err);
@@ -52,7 +125,7 @@ export default function ViewDecryptModal({
       }
     } catch (err) {
       console.error('Decryption failed:', err);
-      setError('Failed to decrypt image. Please check your password and try again.');
+      setError('Failed to decrypt image. The encryption key may be invalid or corrupted.');
       setDecryptedImageUrl(null);
       setDecryptedDescription(null);
     } finally {
@@ -80,22 +153,24 @@ export default function ViewDecryptModal({
     setDecryptedDescription(null);
     setError(null);
     setShowDescriptionFirst(true);
+    setShowPasswordPrompt(false);
+    setDoctorPassword('');
     onClose();
   };
 
-  const handleDecryptClick = () => {
-    const cachedPassword = sessionStorage.getItem('encryption_password');
-    if (cachedPassword) {
-      handlePasswordSubmit(cachedPassword);
-    } else {
-      setIsPasswordPromptOpen(true);
+  // Auto-decrypt when modal opens and metadata is ready
+  useEffect(() => {
+    if (isOpen && !decryptedImageUrl && !isDecrypting && !error && !fetchingMetadata && !showPasswordPrompt) {
+      handleDecrypt();
+    }
+  }, [isOpen, fetchingMetadata, showPasswordPrompt]);
+
+  const handlePasswordSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (doctorPassword.trim()) {
+      handleDecrypt(doctorPassword);
     }
   };
-
-  // Auto-decrypt when modal opens
-  if (isOpen && !decryptedImageUrl && !isDecrypting && !error && !isPasswordPromptOpen) {
-    handleDecryptClick();
-  }
 
   if (!isOpen) return null;
 
@@ -118,7 +193,49 @@ export default function ViewDecryptModal({
 
           {/* Content */}
           <div className="p-6 space-y-6">
-            {isDecrypting && (
+            {fetchingMetadata && (
+              <div className="text-center py-12">
+                <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-indigo-600 mx-auto mb-4"></div>
+                <p className="text-gray-600">Loading image information...</p>
+              </div>
+            )}
+
+            {showPasswordPrompt && !fetchingMetadata && (
+              <div className="bg-blue-50 border border-blue-200 rounded-lg p-6">
+                <h3 className="text-lg font-semibold text-gray-900 mb-4">Enter Your Password</h3>
+                <p className="text-gray-600 mb-4">
+                  To decrypt this patient's medical image, please enter your doctor password.
+                </p>
+                <form onSubmit={handlePasswordSubmit} className="space-y-4">
+                  <input
+                    type="password"
+                    value={doctorPassword}
+                    onChange={(e) => setDoctorPassword(e.target.value)}
+                    placeholder="Doctor password"
+                    className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
+                    autoFocus
+                  />
+                  <div className="flex space-x-3">
+                    <button
+                      type="submit"
+                      disabled={!doctorPassword.trim() || isDecrypting}
+                      className="flex-1 px-4 py-2 bg-indigo-600 hover:bg-indigo-700 disabled:bg-gray-300 text-white rounded-lg transition-colors"
+                    >
+                      {isDecrypting ? 'Decrypting...' : 'Decrypt Image'}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={handleClose}
+                      className="px-4 py-2 bg-gray-300 hover:bg-gray-400 text-gray-700 rounded-lg transition-colors"
+                    >
+                      Cancel
+                    </button>
+                  </div>
+                </form>
+              </div>
+            )}
+
+            {isDecrypting && !showPasswordPrompt && (
               <div className="text-center py-12">
                 <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-indigo-600 mx-auto mb-4"></div>
                 <p className="text-gray-600">Decrypting...</p>
@@ -224,13 +341,6 @@ export default function ViewDecryptModal({
           </div>
         </div>
       </div>
-
-      {/* Password Prompt Modal */}
-      <PasswordPrompt
-        isOpen={isPasswordPromptOpen}
-        onClose={() => setIsPasswordPromptOpen(false)}
-        onSubmit={handlePasswordSubmit}
-      />
     </>
   );
 }
